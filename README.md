@@ -6,9 +6,9 @@ Self-contained installer for deploying the Kinetic Platform on a fresh Linux ser
 
 | File | Purpose |
 |---|---|
-| `install.sh` | Server-side installer — sets up k0s, NFS, Helm, and deploys the platform |
-| `env.values.yaml.tpl` | Helm values template (placeholders replaced by install.sh) |
-| `kinetic-platform-*.tgz` | Pre-packaged Helm chart |
+| `.config`| USERNAME and PASSWORD for Kinetic CLI |
+| `kinetic`| Kinetic CLI |
+| `kinetic-platform-installer-*.tar.gz`| Pre-packaged install files |
 | `README.md` | This file |
 
 ## Prerequisites
@@ -28,22 +28,91 @@ Self-contained installer for deploying the Kinetic Platform on a fresh Linux ser
 
 2. Extract the install:
    ```bash
-   tar xzf kinetic-platform-installer.tar.gz
+   cd kinetic-platform-community-edition
+   tar xzf kinetic-platform-installer*.tar.gz
    ```
 
 3. Run the installer as root:
    ```bash
    # Starter mode with custom domain and custom admin password 
-   sudo ./kinetic-platform-installer/install.sh --starter --domain kinetic.example.com --password s3cr3t
+   sudo ./kinetic-platform-installer/install.sh --starter --domain example.com --password adminpassword
    ```
 
+
+You should see output like this: 
+
+
+  ╔════════════════════════════════════════╗
+  ║     Kinetic Platform Installer v2      ║
+  ╚════════════════════════════════════════╝
+
+
+=== Validating Prerequisites ===
+
+[OK] Prerequisites validated
+
+=== Starter Mode ===
+
+[INFO] Domain:            example.com
+[INFO] Ingress:           traefik
+[INFO] Ports:             80/443 (hostPort)
+[INFO] Elasticsearch:     in-cluster
+[INFO] NFS Server IP:     192.168.86.55
+[INFO] System Username:   admin
+
+[OK] Demo defaults applied
+
+...
+
+
 4. Wait for installation to complete (~10-15 minutes). Credentials are printed at the end.
-   # Reward yourself with a nice refreshment
 
 
-Then open: `https://<domain>/app/console/`
+5. Meantime - edit hostsfile so you point example.com (or whatever name you used) to the IP address given
+(Above sample shows 192.168.86.55)
 
+
+(Optional Step 6) 
+6. # Set the default email address to receive system level emails (disk full, server unhealthy)
+# Usage: kinetic system smtp-set <host> <port> <tls> <username> <password> <from_name> <from_address> [validation_email]
+./kinetic system smtp-set smtp.gmail.com 587 true joe.blow@gmail.com password Joe joe.blow@gmail.com youremail@domain.com
+
+
+7. # Build your first tennant -- I call it "first"
+# Usage: kinetic system space-create <name> <admin_user> <email> <display_name> <password>
+./kinetic system space-create first joe youremail@domain.com Joe joe1
+
+8. # Open your Kinetic Platform administrator console
+Open: `https://example.com/app/console/`
 Your browser will warn about a self-signed certificate — click through to proceed.
+# License the system (License defaults to 1000 submissions - then need to restart core server)
+
+9. # Open your Kinetic Platform first space administrator console
+Open: `https://first.example.com/app/console/`
+
+10. # Open your Kinetic Platform first space as a user 
+https://first.example.com/
+
+
+
+
+
+
+
+[[AI WORLD // incomplete directions]]
+11. # DOWNLOAD MCP and Skills
+https://github.com/kineticdata/kinetic-platform-mgnt-mcp-server
+https://github.com/kineticdata/kinetic-platform-ai-skills
+
+
+x. # Build App
+(claude)
+connect the mcp server to Kinetic Platform
+load the Skills for Kinetic Platform
+
+Build me a simple helpdesk application on the Kinetic Platform
+
+
 
 ## What Gets Installed (Server)
 
