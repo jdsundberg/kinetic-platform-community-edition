@@ -22,7 +22,7 @@ KINETIC_CLI_VERSION="1.3.0"
 
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONF="${KINETIC_CONF:-${SCRIPT_DIR}/kineticCLI.conf}"
+CONF="${KINETIC_CONF:-${SCRIPT_DIR}/.config}"
 
 if [ -f "$CONF" ]; then
   source "$CONF"
