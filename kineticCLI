@@ -1,0 +1,1370 @@
+#!/bin/bash
+#
+# kinetic - CLI tool for managing a Kinetic Data Platform instance
+#
+# Usage: kinetic <command> [subcommand] [args...]
+#
+# Configuration: Set variables in kinetic.conf (same directory as this script)
+# or as environment variables. See kinetic.conf for details.
+#
+# Changelog:
+#   1.3.0  'system users' now streams per-space, reuses one login, and caps each
+#          space at 100 users in the all-spaces view (flagged when exceeded).
+#   1.2.0  Add 'system users [space]' to list users (with enabled status) across
+#          all spaces or a single space, via the system-coordinator core proxy.
+#   1.1.0  Add 'system info [space]' per-space detail; add --version flag.
+#   1.0.0  Initial versioned release.
+#
+
+set -euo pipefail
+
+KINETIC_CLI_VERSION="1.3.0"
+
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONF="${KINETIC_CONF:-${SCRIPT_DIR}/kineticCLI.conf}"
+
+if [ -f "$CONF" ]; then
+  source "$CONF"
+fi
+
+KINETIC_HOST="${KINETIC_HOST:-}"
+KINETIC_SYSTEM_USER="${KINETIC_SYSTEM_USER:-}"
+KINETIC_SYSTEM_PASS="${KINETIC_SYSTEM_PASS:-}"
+KINETIC_SPACE_USER="${KINETIC_SPACE_USER:-}"
+KINETIC_SPACE_PASS="${KINETIC_SPACE_PASS:-}"
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+_require_config() {
+  if [ -z "$KINETIC_HOST" ]; then
+    echo "Error: KINETIC_HOST must be set in ${CONF} or as an environment variable."
+    exit 1
+  fi
+}
+
+_require_system() {
+  if [ -z "$KINETIC_SYSTEM_USER" ] || [ -z "$KINETIC_SYSTEM_PASS" ]; then
+    echo "Error: KINETIC_SYSTEM_USER and KINETIC_SYSTEM_PASS must be set for system commands."
+    exit 1
+  fi
+}
+
+_require_space() {
+  if [ -z "$KINETIC_SPACE_USER" ] || [ -z "$KINETIC_SPACE_PASS" ]; then
+    echo "Error: KINETIC_SPACE_USER and KINETIC_SPACE_PASS must be set for space commands."
+    exit 1
+  fi
+}
+
+_get_token() {
+  _require_system
+  local token
+  token=$(curl -sk -X POST "${KINETIC_HOST}/app/system-coordinator/login" \
+    -H 'Content-Type: application/json' \
+    -d "{\"username\": \"${KINETIC_SYSTEM_USER}\", \"password\": \"${KINETIC_SYSTEM_PASS}\"}" \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])" 2>/dev/null)
+
+  if [ -z "$token" ]; then
+    echo "Error: System admin login failed" >&2
+    exit 1
+  fi
+  echo "$token"
+}
+
+# System-level API call (requires system admin JWT)
+_api() {
+  local method="$1" path="$2"
+  shift 2
+  local token
+  token=$(_get_token)
+  curl -sk -X "$method" "${KINETIC_HOST}${path}" \
+    -H "Authorization: Bearer ${token}" \
+    -H 'Content-Type: application/json' \
+    -H 'Accept: application/json' \
+    "$@"
+}
+
+# Space-scoped API call (uses basic auth with space user)
+_space_api() {
+  _require_space
+  local method="$1" space="$2" path="$3"
+  shift 3
+  curl -sk -X "$method" "${KINETIC_HOST}/${space}/app/api/v1${path}" \
+    -u "${KINETIC_SPACE_USER}:${KINETIC_SPACE_PASS}" \
+    -H 'Content-Type: application/json' \
+    -H 'Accept: application/json' \
+    "$@"
+}
+
+_pretty() {
+  python3 -m json.tool 2>/dev/null || cat
+}
+
+# ---------------------------------------------------------------------------
+# system - System admin operations
+# ---------------------------------------------------------------------------
+
+cmd_system_change_password() {
+  local new_password="${1:?Usage: kinetic system change-password <new_password>}"
+
+  echo "Changing system admin password..."
+  _api PUT "/app/system-coordinator/api/v1/platform/system-user" \
+    -d "$(cat <<EOF
+{
+  "username": "${KINETIC_SYSTEM_USER}",
+  "password": "${new_password}",
+  "passwordConfirmation": "${new_password}"
+}
+EOF
+)" | _pretty
+  echo ""
+  echo "Done. Remember to update kinetic.conf with the new password."
+}
+
+# Pretty-print per-space detail (everything except users) from tenant JSON on
+# stdin. Accepts either a single-tenant payload ({"tenant":{...}}) or a
+# multi-tenant payload ({"tenants":[...]}).
+_fmt_spaces() {
+  python3 -c "
+import sys, json
+
+d = json.load(sys.stdin)
+if 'tenants' in d:
+    tenants = d['tenants']
+elif 'tenant' in d:
+    tenants = [d['tenant']]
+elif 'slug' in d:
+    tenants = [d]
+else:
+    tenants = []
+
+if not tenants:
+    print('  (no spaces)')
+    sys.exit(0)
+
+def deployment(comp, label):
+    dep = comp.get('deployment') or {}
+    if not dep:
+        print(f'  -- {label} --')
+        print('    (no deployment)')
+        return
+    status = dep.get('status', '-')
+    ready = dep.get('readyReplicas', 0) or 0
+    desired = dep.get('specReplicas', 0) or 0
+    print(f'  -- {label} --')
+    print(f'    Image:       {dep.get(\"image\",\"-\") or \"-\"}')
+    print(f'    Status:      {status} ({ready}/{desired} ready)')
+    print(f'    Namespace:   {dep.get(\"namespace\",\"-\")}')
+    adapter = comp.get('databaseAdapter') or {}
+    props = {p.get('name'): p for p in adapter.get('properties', [])}
+    def pv(name):
+        p = props.get(name, {})
+        if p.get('sensitive'):
+            return '********' if p.get('value') else '(not set)'
+        return p.get('value', '-')
+    if props:
+        print(f'    Database:    {pv(\"database\")} @ {pv(\"host\")}:{pv(\"port\")} '
+              f'(user {pv(\"username\")}, ssl={pv(\"sslEnabled\")})')
+
+for t in sorted(tenants, key=lambda x: x.get('slug', '')):
+    s = t.get('space', {})
+    feats = t.get('features', {})
+    print(f'=== Space: {t.get(\"slug\",\"-\")} ({s.get(\"name\",\"-\")}) ===')
+    print(f'  Status:        {s.get(\"status\",\"-\")} — {s.get(\"statusMessage\",\"\") or \"\"}')
+    print(f'  Display Type:  {s.get(\"displayType\",\"-\")}')
+    print(f'  Display Value: {s.get(\"displayValue\",\"-\") or \"-\"}')
+    print(f'  Bundle Base:   {s.get(\"sharedBundleBase\",\"-\") or \"-\"}')
+    print(f'  Bundle Path:   {s.get(\"bundlePath\",\"-\") or \"(default)\"}')
+    print(f'  Locale:        {s.get(\"defaultLocale\") or \"-\"} (enabled: {\", \".join(s.get(\"enabledLocales\") or []) or \"-\"})')
+    print(f'  Timezone:      {s.get(\"defaultTimezone\") or \"-\"}')
+    sess = s.get('sessionInactiveLimitInSeconds')
+    print(f'  Session Limit: {str(sess)+\"s\" if sess else \"-\"}')
+    print(f'  IP Allowlist:  {\"enabled\" if s.get(\"allowedIpsEnabled\") else \"disabled\"}')
+    print(f'  Created:       {s.get(\"createdAt\",\"-\")} by {s.get(\"createdBy\",\"-\")}')
+    print(f'  Updated:       {s.get(\"updatedAt\",\"-\")} by {s.get(\"updatedBy\",\"-\")}')
+    print(f'  Features:      task={feats.get(\"task\",\"-\")} integrator={feats.get(\"integrator\",\"-\")}')
+    deployment(t.get('task', {}), 'Task')
+    deployment(t.get('integrator', {}), 'Integrator')
+    print()
+" 2>/dev/null
+}
+
+# Print detail for a single space, or all spaces when no slug is given.
+cmd_system_space_detail() {
+  local space="${1:-}"
+  if [ -n "$space" ]; then
+    _api GET "/app/system-coordinator/api/v1/tenants/${space}" | _fmt_spaces
+  else
+    _api GET "/app/system-coordinator/api/v1/tenants?limit=100" | _fmt_spaces
+  fi
+}
+
+cmd_system_info() {
+  # When a space slug is supplied, show only that space's detail.
+  local space="${1:-}"
+  if [ -n "$space" ]; then
+    cmd_system_space_detail "$space"
+    return
+  fi
+
+  echo "=== Platform Version ==="
+  _api GET "/app/system-coordinator/api/v1/version" \
+    | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print(f\"  Version:      {d.get('version','-')}\")
+print(f\"  Build:        {d.get('buildNumber','-')}\")
+print(f\"  Build Date:   {d.get('buildDate','-')}\")
+" 2>/dev/null
+
+  echo ""
+  echo "=== Core Version ==="
+  _api GET "/app/system-coordinator/components/core/app/api/v1/version" \
+    | python3 -c "
+import sys, json
+r = json.load(sys.stdin)
+d = r.get('version', r)
+print(f\"  Version:      {d.get('version','-')}\")
+print(f\"  Build:        {d.get('buildNumber','-')}\")
+print(f\"  Build Date:   {d.get('buildDate','-')}\")
+" 2>/dev/null
+
+  echo ""
+  echo "=== License ==="
+  _api GET "/app/system-coordinator/components/core/app/api/v1/license/check" \
+    | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print(f\"  Application:  {d.get('application','-')}\")
+print(f\"  License:      {d.get('license','-')}\")
+" 2>/dev/null
+
+  echo ""
+  echo "=== Admin User ==="
+  _api GET "/app/system-coordinator/api/v1/platform/system-user" \
+    | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print(f\"  Username:     {d.get('username','-')}\")
+" 2>/dev/null
+
+  echo ""
+  echo "=== SMTP ==="
+  _api GET "/app/system-coordinator/api/v1/platform/default-smtp-adapter" \
+    | python3 -c "
+import sys, json
+adapters = json.load(sys.stdin).get('adapter', [])
+for a in adapters:
+    v = a.get('value', '(not set)')
+    if a.get('sensitive'):
+        v = '********' if v else '(not set)'
+    print(f\"  {a['label']+':':<16}{v}\")
+" 2>/dev/null
+
+  echo ""
+  echo "=== Database (Task Default) ==="
+  _api GET "/app/system-coordinator/api/v1/platform/default-task-db-adapter" \
+    | python3 -c "
+import sys, json
+d = json.load(sys.stdin).get('adapter', {})
+print(f\"  Type:         {d.get('type','-')}\")
+print(f\"  Name:         {d.get('name','-')}\")
+for p in d.get('properties', []):
+    v = p.get('value', '(not set)')
+    if p.get('sensitive'):
+        v = '********' if v else '(not set)'
+    print(f\"  {p['label']+':':<16}{v}\")
+" 2>/dev/null
+
+  echo ""
+  echo "=== Components ==="
+  _api GET "/app/system-coordinator/api/v1/platform/components" \
+    | python3 -c "
+import sys, json
+comps = json.load(sys.stdin).get('components', [])
+for c in comps:
+    print(f\"  {c['name']:<40} {c['status']}\")
+" 2>/dev/null
+
+  echo ""
+  echo "=== Spaces ==="
+  _api GET "/app/system-coordinator/api/v1/tenants?limit=100" \
+    | python3 -c "
+import sys, json
+tenants = json.load(sys.stdin).get('tenants', [])
+for t in tenants:
+    slug = t.get('slug','-')
+    space = t.get('space', {})
+    status = space.get('status', '-')
+    msg = space.get('statusMessage', '') or ''
+    print(f\"  {slug:<30} {status:<12} {msg}\")
+" 2>/dev/null
+
+  echo ""
+  echo "=== Connection ==="
+  echo "  Host:         ${KINETIC_HOST}"
+  echo "  Admin User:   ${KINETIC_SYSTEM_USER}"
+
+  echo ""
+  echo "=== Space Details ==="
+  echo ""
+  cmd_system_space_detail
+}
+
+cmd_system_health() {
+  local all_ok=true
+
+  echo "=== Component Health ==="
+  _api GET "/app/system-coordinator/api/v1/platform/components" \
+    | python3 -c "
+import sys, json
+comps = json.load(sys.stdin).get('components', [])
+bad = 0
+for c in comps:
+    status = c['status']
+    icon = 'OK' if status == 'Running' else 'WARN'
+    if status != 'Running':
+        bad += 1
+    print(f'  [{icon}] {c[\"name\"]:<40} {status}')
+print()
+if bad > 0:
+    print(f'  {bad} component(s) not running')
+    sys.exit(1)
+else:
+    print(f'  All {len(comps)} components running')
+" 2>/dev/null || all_ok=false
+
+  echo ""
+  echo "=== License Health ==="
+  _api GET "/app/system-coordinator/components/core/app/api/v1/license/check" \
+    | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+app = d.get('application', '-')
+lic = d.get('license', '-')
+icon = 'OK' if app == 'Running' else 'WARN'
+print(f'  [{icon}] Application: {app}')
+print(f'  License: {lic}')
+" 2>/dev/null
+
+  echo ""
+  echo "=== Space Health ==="
+  _api GET "/app/system-coordinator/api/v1/tenants?limit=100" \
+    | python3 -c "
+import sys, json
+tenants = json.load(sys.stdin).get('tenants', [])
+bad = 0
+for t in tenants:
+    slug = t.get('slug','-')
+    space = t.get('space', {})
+    status = space.get('status', '-')
+    msg = space.get('statusMessage', '') or ''
+    icon = 'OK' if status == 'Active' else 'WARN'
+    if status != 'Active':
+        bad += 1
+    print(f'  [{icon}] {slug:<30} {status:<12} {msg}')
+
+    # Check integrator/task deployments
+    for comp in ('integrator', 'task'):
+        dep = t.get(comp, {}).get('deployment', {})
+        if dep:
+            dep_status = dep.get('status', '-')
+            ready = dep.get('readyReplicas', 0) or 0
+            desired = dep.get('specReplicas', 0) or 0
+            dep_icon = 'OK' if dep_status == 'Running' and ready >= desired else 'WARN'
+            print(f'        [{dep_icon}] {comp:<20} {dep_status} ({ready}/{desired} replicas)')
+print()
+if bad > 0:
+    print(f'  {bad} space(s) not active')
+else:
+    print(f'  All {len(tenants)} space(s) active')
+" 2>/dev/null
+
+  echo ""
+  echo "=== Notifications ==="
+  _api GET "/app/system-coordinator/api/v1/platform/notifications" \
+    | python3 -c "
+import sys, json
+notes = json.load(sys.stdin)
+if not notes:
+    print('  No notifications')
+else:
+    for n in notes:
+        print(f'  - {n}')
+" 2>/dev/null
+}
+
+cmd_system_smtp_set() {
+  local host="${1:?Usage: kinetic system smtp-set <host> <port> <tls> <username> <password> <from_name> <from_address> [validation_email]}"
+  local port="${2:?Missing port}"
+  local tls="${3:?Missing tls (true/false)}"
+  local username="${4:?Missing username}"
+  local password="${5:?Missing password}"
+  local from_name="${6:?Missing from_name}"
+  local from_address="${7:?Missing from_address}"
+  local to_address="${8:-}"
+
+  echo "Updating SMTP settings..."
+  _api PUT "/app/system-coordinator/api/v1/platform/default-smtp-adapter" \
+    -d "$(cat <<EOF
+{
+  "host": "${host}",
+  "port": "${port}",
+  "username": "${username}",
+  "password": "${password}",
+  "tlsEnabled": "${tls}",
+  "fromName": "${from_name}",
+  "fromAddress": "${from_address}",
+  "toAddress": "${to_address}"
+}
+EOF
+)" | _pretty
+}
+
+cmd_system_smtp_get() {
+  _api GET "/app/system-coordinator/api/v1/platform/default-smtp-adapter" | _pretty
+}
+
+cmd_system_list_spaces() {
+  _api GET "/app/system-coordinator/api/v1/tenants?limit=100" \
+    | python3 -c "import sys,json; [print(t['slug']) for t in json.load(sys.stdin).get('tenants',[])]" 2>/dev/null
+}
+
+# List users across all spaces, or a single space when a slug is given.
+# Users are read through the system-coordinator core proxy (the same endpoint
+# the system console uses), so the system admin token is sufficient — no
+# per-space credential is required.
+cmd_system_users() {
+  local filter="${1:-}"
+
+  # Log in once and reuse the token for every space — re-authenticating per
+  # space (the old behavior) is what made the all-spaces listing slow.
+  local token base
+  token=$(_get_token)
+  base="${KINETIC_HOST}/app/system-coordinator/components/core/app/api/v1/spaces"
+
+  local spaces
+  if [ -n "$filter" ]; then
+    spaces="$filter"
+  else
+    spaces=$(curl -sk "${KINETIC_HOST}/app/system-coordinator/api/v1/tenants?limit=1000" \
+      -H "Authorization: Bearer ${token}" \
+      | python3 -c "import sys,json; [print(t['slug']) for t in json.load(sys.stdin).get('tenants',[])]" 2>/dev/null)
+  fi
+
+  # When listing ALL spaces, cap each space at 100 users so output stays fast
+  # and readable. A single named space shows every user (cap=0 => unlimited).
+  local cap=100
+  [ -n "$filter" ] && cap=0
+
+  # Stream one block per space as it is fetched, so progress is visible.
+  for s in $spaces; do
+    echo "=== ${s} ==="
+    printf "  %-32s %-8s %-6s %s\n" "USERNAME" "ENABLED" "ADMIN" "EMAIL"
+
+    if [ "$cap" -gt 0 ]; then
+      curl -sk "${base}/${s}/users?include=details&limit=${cap}" \
+        -H "Authorization: Bearer ${token}" -H 'Accept: application/json' \
+        | python3 -c "
+import sys, json
+cap = ${cap}
+s = '${s}'
+d = json.load(sys.stdin)
+users = sorted(d.get('users', []), key=lambda x: x.get('username', ''))
+for u in users:
+    enabled = 'yes' if u.get('enabled') else 'NO'
+    admin = 'admin' if u.get('spaceAdmin') else ''
+    print(f\"  {u.get('username','-'):<32} {enabled:<8} {admin:<6} {u.get('email','') or ''}\")
+if d.get('nextPageToken'):
+    print(f'  >> {len(users)} shown — MORE THAN {cap} USERS in this space.')
+    print(f'  >> run:  kineticCLI system users {s}   to list them all')
+else:
+    print(f'  {len(users)} user(s)')
+" 2>/dev/null || echo "  (unable to read users)"
+    else
+      local page_token="" resp page_rows count=0
+      while :; do
+        local q="include=details&limit=1000"
+        [ -n "$page_token" ] && q="${q}&pageToken=${page_token}"
+        resp=$(curl -sk "${base}/${s}/users?${q}" \
+          -H "Authorization: Bearer ${token}" -H 'Accept: application/json')
+        page_token=$(echo "$resp" | python3 -c "import sys,json; print(json.load(sys.stdin).get('nextPageToken') or '')" 2>/dev/null || true)
+        page_rows=$(echo "$resp" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+for u in sorted(d.get('users', []), key=lambda x: x.get('username', '')):
+    enabled = 'yes' if u.get('enabled') else 'NO'
+    admin = 'admin' if u.get('spaceAdmin') else ''
+    print(f\"  {u.get('username','-'):<32} {enabled:<8} {admin:<6} {u.get('email','') or ''}\")
+" 2>/dev/null || true)
+        if [ -n "$page_rows" ]; then
+          printf '%s\n' "$page_rows"
+          count=$((count + $(printf '%s\n' "$page_rows" | grep -c .)))
+        fi
+        [ -z "$page_token" ] && break
+      done
+      echo "  ${count} user(s)"
+    fi
+    echo ""
+  done
+}
+
+
+cmd_system_space_create() {
+  local space_name="${1:?Usage: kinetic system space-create <name> <admin_user> <email> <display_name> <password>}"
+  local username="${2:?Missing admin username}"
+  local email="${3:?Missing email}"
+  local display_name="${4:?Missing display_name}"
+  local password="${5:?Missing password}"
+  local slug="${space_name}"
+
+  echo "Creating space '${space_name}'..."
+  _api POST "/app/system-coordinator/api/v1/tenants" \
+    -d "$(cat <<EOF
+{
+  "space": {
+    "slug": "${slug}",
+    "name": "${space_name}"
+  },
+  "features": {
+    "task": "true",
+    "integrator": "true"
+  },
+  "task": {
+    "deployment": {
+      "image": "",
+      "replicas": 1
+    },
+    "databaseAdapter": {
+      "type": "postgres",
+      "properties": {
+        "host": "postgresql.kinetic.svc.cluster.local",
+        "port": "5432",
+        "database": "postgres",
+        "username": "postgres",
+        "sslEnabled": "false",
+        "sslmode": "disable"
+      }
+    },
+    "autoCreateDatabase": "true"
+  },
+  "integrator": {
+    "deployment": {
+      "image": "",
+      "replicas": 1
+    },
+    "databaseAdapter": {
+      "type": "postgres",
+      "properties": {
+        "host": "postgresql.kinetic.svc.cluster.local",
+        "port": "5432",
+        "database": "postgres",
+        "username": "postgres",
+        "sslEnabled": "false",
+        "sslmode": "verify-peer"
+      }
+    },
+    "autoCreateDatabase": "true"
+  },
+  "users": [
+    {
+      "username": "${username}",
+      "password": "${password}",
+      "email": "${email}",
+      "displayName": "${display_name}"
+    }
+  ]
+}
+EOF
+)" | _pretty
+  echo ""
+  echo "Space '${space_name}' created."
+}
+
+cmd_system_restart() {
+  local component="${1:?Usage: kinetic system restart <component>
+Components: agent, core, loghub, indexer, cassandra, elasticsearch, ingress, trusted-certs}"
+
+  case "$component" in
+    agent|core|loghub|indexer)
+      echo "Restarting ${component}..."
+      _api POST "/app/system-coordinator/api/v1/platform/components/${component}/restart" > /dev/null
+      echo "  ${component} restart initiated."
+      ;;
+    cassandra)
+      echo "Restarting Cassandra..."
+      _api POST "/app/system-coordinator/api/v1/platform/restartResources" \
+        -d '{"namespace":"kinetic","label":"platform.kineticdata.com/backend-cassandra"}' > /dev/null
+      echo "  Cassandra restart initiated."
+      ;;
+    elasticsearch)
+      echo "Restarting ElasticSearch..."
+      _api POST "/app/system-coordinator/api/v1/platform/restartResources" \
+        -d '{"namespace":"kinetic","label":"platform.kineticdata.com/backend-elasticsearch"}' > /dev/null
+      echo "  ElasticSearch restart initiated."
+      ;;
+    ingress)
+      echo "Restarting Ingress..."
+      _api POST "/app/system-coordinator/api/v1/platform/restartResources" \
+        -d '{"namespace":"kinetic","label":"platform.kineticdata.com/backend-ingress"}' > /dev/null
+      echo "  Ingress restart initiated."
+      ;;
+    trusted-certs)
+      echo "Restarting Trusted Certificates..."
+      _api POST "/app/system-coordinator/api/v1/platform/restartResources" \
+        -d '{"namespace":"kinetic","label":"platform.kineticdata.com/backend-trusted-certs"}' > /dev/null
+      echo "  Trusted Certificates restart initiated."
+      ;;
+    *)
+      echo "Unknown component: ${component}"
+      echo "Usage: kinetic system restart <component>"
+      echo "Components: agent, core, loghub, indexer, cassandra, elasticsearch, ingress, trusted-certs"
+      exit 1
+      ;;
+  esac
+}
+
+cmd_system_rotate_encryption_key() {
+  echo "Rotating agent encryption key..."
+  _api POST "/app/system-coordinator/api/v1/platform/rotateEncryptionKey" -d '{}' > /dev/null
+  echo "  Key rotation initiated. Use 'kinetic system background-tasks' to monitor progress."
+}
+
+cmd_system_background_tasks() {
+  _api GET "/app/system-coordinator/api/v1/backgroundTasks" \
+    | python3 -c "
+import sys, json
+
+data = json.load(sys.stdin)
+tasks = data.get('backgroundTasks', [])
+
+if not tasks:
+    print('  No background tasks.')
+    sys.exit(0)
+
+print(f'  {len(tasks)} background task(s)\n')
+
+for t in tasks:
+    tid = t.get('id', '-')
+    status = t.get('status', '-')
+    desc = t.get('description', '-')
+    transitions = t.get('transitions', [])
+    messages = t.get('messages', [])
+    result = t.get('result')
+    exception = t.get('exception')
+
+    # Get created/completed times from transitions
+    created = '-'
+    for tr in transitions:
+        if 'Created' in tr:
+            created = tr['Created'][:19].replace('T', ' ')
+            break
+
+    print(f'  === Task: {tid} ===')
+    print(f'  Status:      {status}')
+    print(f'  Description: {desc}')
+    print(f'  Created:     {created}')
+
+    # Show transition timeline
+    print(f'  Transitions:')
+    for tr in transitions:
+        for k, v in tr.items():
+            print(f'    {k:<12} {v[:19].replace(\"T\", \" \")}')
+
+    # Show last few messages (skip repetitive 'Checking' messages)
+    unique_msgs = []
+    for m in messages:
+        msg = m.get('message', '')
+        if not unique_msgs or unique_msgs[-1][0] != msg:
+            unique_msgs.append((msg, m.get('timestamp', '')[:19].replace('T', ' '), 1))
+        else:
+            prev = unique_msgs[-1]
+            unique_msgs[-1] = (prev[0], m.get('timestamp', '')[:19].replace('T', ' '), prev[2] + 1)
+
+    print(f'  Messages:')
+    for msg, ts, count in unique_msgs:
+        repeat = f' (x{count})' if count > 1 else ''
+        print(f'    {ts}  {msg}{repeat}')
+
+    if exception:
+        print(f'  Exception: {exception}')
+
+    if result:
+        r_status = result.get('status', '-')
+        r_content = result.get('content', '')
+        print(f'  Result:      HTTP {r_status}')
+        try:
+            parsed = json.loads(r_content)
+            errors = parsed.get('errors', {})
+            if errors:
+                print(f'  Errors:      {json.dumps(errors)}')
+            else:
+                print(f'  Errors:      none')
+            for key in ('bridges', 'filestores', 'handlers'):
+                items = parsed.get(key, [])
+                if items:
+                    print(f'  {key.capitalize()}: {', '.join(items)}')
+        except:
+            if r_content:
+                print(f'  Content:     {r_content[:200]}')
+
+    print()
+" 2>/dev/null
+}
+
+cmd_system_submission_engine() {
+  local action="${1:?Usage: kinetic system submission-engine (start|stop|status)}"
+  case "$action" in
+    start)
+      echo "Starting submission engine..."
+      _api PUT "/app/system-coordinator/components/core/app/api/v1/license/reset" \
+        -d '{"params":{},"headers":{"X-Kinetic-AuthAssumed":"true"}}' > /dev/null
+      _api GET "/app/system-coordinator/components/core/app/api/v1/license/check" \
+        | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print(f\"  Submission Engine: {d.get('application','-')}\")
+" 2>/dev/null
+      ;;
+    stop)
+      echo "Error: The Kinetic platform does not provide an API to stop the submission engine."
+      echo "The engine stops automatically when the unlicensed submission limit is reached."
+      exit 1
+      ;;
+    status)
+      _api GET "/app/system-coordinator/components/core/app/api/v1/license/check" \
+        | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print(f\"  Submission Engine: {d.get('application','-')}\")
+print(f\"  License:           {d.get('license','-')}\")
+" 2>/dev/null
+      ;;
+    *)
+      echo "Usage: kinetic system submission-engine (start|stop|status)"
+      exit 1
+      ;;
+  esac
+}
+
+cmd_system_space_delete() {
+  local space="${1:?Usage: kinetic system space-delete <slug>}"
+  echo "Deleting space '${space}'..."
+  _api DELETE "/app/api/v1/spaces/${space}" | _pretty
+}
+
+# ---------------------------------------------------------------------------
+# space - Space-scoped operations
+# ---------------------------------------------------------------------------
+
+cmd_space_get() {
+  local space="${1:?Usage: kinetic space get <slug>}"
+  _space_api GET "$space" "/space?include=details" | _pretty
+}
+
+cmd_space_export() {
+  local space="${1:?Usage: kinetic space export <slug> [output_file]}"
+  local outfile="${2:-${space}-export.json}"
+  echo "Exporting space '${space}' to ${outfile}..."
+  _space_api GET "$space" "/space?export=true" > "$outfile"
+  echo "Done. Exported to ${outfile}"
+}
+
+cmd_space_import() {
+  local space="${1:?Usage: kinetic space import <slug> <input_file>}"
+  local infile="${2:?Missing input file}"
+  if [ ! -f "$infile" ]; then
+    echo "Error: File not found: ${infile}"
+    exit 1
+  fi
+  echo "Importing into space '${space}' from ${infile}..."
+  _space_api PUT "$space" "/space" -d "@${infile}" | _pretty
+  echo "Done."
+}
+
+# ---------------------------------------------------------------------------
+# user - User management within a space
+# ---------------------------------------------------------------------------
+
+cmd_user_list() {
+  local space="${1:?Usage: kinetic user list <space_slug>}"
+  _space_api GET "$space" "/users?include=details" | _pretty
+}
+
+cmd_user_create() {
+  local space="${1:?Usage: kinetic user create <space_slug> <username> <email> <display_name> <password>}"
+  local username="${2:?Missing username}"
+  local email="${3:?Missing email}"
+  local display_name="${4:?Missing display_name}"
+  local password="${5:?Missing password}"
+
+  echo "Creating user '${username}' in space '${space}'..."
+  _space_api POST "$space" "/users" \
+    -d "$(cat <<EOF
+{
+  "username": "${username}",
+  "password": "${password}",
+  "email": "${email}",
+  "displayName": "${display_name}",
+  "enabled": true,
+  "spaceAdmin": false
+}
+EOF
+)" | _pretty
+}
+
+cmd_user_get() {
+  local space="${1:?Usage: kinetic user get <space_slug> <username>}"
+  local username="${2:?Missing username}"
+  _space_api GET "$space" "/users/${username}?include=details" | _pretty
+}
+
+cmd_user_update() {
+  local space="${1:?Usage: kinetic user update <space_slug> <username> <json_body>}"
+  local username="${2:?Missing username}"
+  local body="${3:?Missing JSON body, e.g. '{\"email\":\"new@email.com\"}'}"
+
+  echo "Updating user '${username}' in space '${space}'..."
+  _space_api PUT "$space" "/users/${username}" -d "$body" | _pretty
+}
+
+cmd_user_delete() {
+  local space="${1:?Usage: kinetic user delete <space_slug> <username>}"
+  local username="${2:?Missing username}"
+  echo "Deleting user '${username}' from space '${space}'..."
+  _space_api DELETE "$space" "/users/${username}" | _pretty
+}
+
+cmd_user_change_password() {
+  local space="${1:?Usage: kinetic user change-password <space_slug> <username> <new_password>}"
+  local username="${2:?Missing username}"
+  local new_password="${3:?Missing new_password}"
+
+  echo "Changing password for '${username}' in space '${space}'..."
+  _space_api PUT "$space" "/users/${username}" \
+    -d "{\"password\": \"${new_password}\"}" | _pretty
+}
+
+# ---------------------------------------------------------------------------
+# team - Team management within a space
+# ---------------------------------------------------------------------------
+
+cmd_team_list() {
+  local space="${1:?Usage: kinetic team list <space_slug>}"
+  _space_api GET "$space" "/teams?include=details" | _pretty
+}
+
+cmd_team_create() {
+  local space="${1:?Usage: kinetic team create <space_slug> <team_name> [description]}"
+  local name="${2:?Missing team name}"
+  local description="${3:-}"
+
+  echo "Creating team '${name}' in space '${space}'..."
+  _space_api POST "$space" "/teams" \
+    -d "{\"name\": \"${name}\", \"description\": \"${description}\"}" | _pretty
+}
+
+cmd_team_delete() {
+  local space="${1:?Usage: kinetic team delete <space_slug> <team_slug>}"
+  local team_slug="${2:?Missing team slug}"
+  echo "Deleting team '${team_slug}' from space '${space}'..."
+  _space_api DELETE "$space" "/teams/${team_slug}" | _pretty
+}
+
+cmd_team_add_member() {
+  local space="${1:?Usage: kinetic team add-member <space_slug> <team_name> <username>}"
+  local team_name="${2:?Missing team name}"
+  local username="${3:?Missing username}"
+
+  echo "Adding '${username}' to team '${team_name}' in space '${space}'..."
+  _space_api POST "$space" "/memberships" \
+    -d "{\"team\": {\"name\": \"${team_name}\"}, \"user\": {\"username\": \"${username}\"}}" | _pretty
+}
+
+cmd_team_remove_member() {
+  local space="${1:?Usage: kinetic team remove-member <space_slug> <team_slug> <username>}"
+  local team_slug="${2:?Missing team slug}"
+  local username="${3:?Missing username}"
+
+  echo "Removing '${username}' from team '${team_slug}' in space '${space}'..."
+  _space_api DELETE "$space" "/memberships/${team_slug}_${username}" | _pretty
+}
+
+# ---------------------------------------------------------------------------
+# kapp - Kapp management within a space
+# ---------------------------------------------------------------------------
+
+cmd_kapp_list() {
+  local space="${1:?Usage: kinetic kapp list <space_slug>}"
+  _space_api GET "$space" "/kapps" | _pretty
+}
+
+cmd_kapp_create() {
+  local space="${1:?Usage: kinetic kapp create <space_slug> <name> <slug>}"
+  local name="${2:?Missing kapp name}"
+  local slug="${3:?Missing kapp slug}"
+
+  echo "Creating kapp '${name}' in space '${space}'..."
+  _space_api POST "$space" "/kapps" \
+    -d "{\"name\": \"${name}\", \"slug\": \"${slug}\"}" | _pretty
+}
+
+cmd_kapp_get() {
+  local space="${1:?Usage: kinetic kapp get <space_slug> <kapp_slug>}"
+  local kapp="${2:?Missing kapp slug}"
+  _space_api GET "$space" "/kapps/${kapp}?include=details" | _pretty
+}
+
+cmd_kapp_detail() {
+  local space="${1:?Usage: kinetic kapp detail <space_slug> <kapp_slug>}"
+  local kapp="${2:?Missing kapp slug}"
+
+  # Kapp info
+  echo "=== Kapp: ${kapp} ==="
+  _space_api GET "$space" "/kapps/${kapp}?include=details" \
+    | python3 -c "
+import sys, json
+k = json.load(sys.stdin).get('kapp', {})
+print(f\"  Name:         {k.get('name','-')}\")
+print(f\"  Slug:         {k.get('slug','-')}\")
+print(f\"  Display Type: {k.get('displayType','-')}\")
+print(f\"  Created:      {k.get('createdAt','-')} by {k.get('createdBy','-')}\")
+print(f\"  Updated:      {k.get('updatedAt','-')} by {k.get('updatedBy','-')}\")
+" 2>/dev/null
+
+  # Forms
+  echo ""
+  echo "=== Forms ==="
+  _space_api GET "$space" "/kapps/${kapp}/forms?limit=1000&include=details" \
+    | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+forms = d.get('forms', [])
+if not forms:
+    print('  (none)')
+else:
+    print(f'  {len(forms)} form(s)')
+    print(f'  {\"Name\":<35} {\"Slug\":<25} {\"Status\":<10} Type')
+    print(f'  {\"-\"*35} {\"-\"*25} {\"-\"*10} {\"-\"*15}')
+    for f in sorted(forms, key=lambda x: x.get('name','')):
+        print(f\"  {f.get('name','-'):<35} {f.get('slug','-'):<25} {f.get('status','-'):<10} {f.get('type','-') or '-'}\")
+" 2>/dev/null
+
+  # Kapp-level workflows
+  echo ""
+  echo "=== Kapp Workflows ==="
+  _space_api GET "$space" "/kapps/${kapp}/workflows" \
+    | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+wfs = d.get('workflows', [])
+if not wfs:
+    print('  (none)')
+else:
+    print(f'  {len(wfs)} workflow(s)')
+    for w in wfs:
+        print(f\"  {w.get('name','-'):<40} event={w.get('event','-'):<25} status={w.get('status','-')}\")
+" 2>/dev/null
+
+  # Per-form workflows
+  echo ""
+  echo "=== Form Workflows ==="
+  _space_api GET "$space" "/kapps/${kapp}/forms?limit=1000" \
+    | python3 -c "
+import sys, json
+forms = json.load(sys.stdin).get('forms', [])
+for f in forms:
+    print(f'FORM:{f[\"slug\"]}')
+" 2>/dev/null | while read -r line; do
+    form_slug="${line#FORM:}"
+    local wf_json
+    wf_json=$(_space_api GET "$space" "/kapps/${kapp}/forms/${form_slug}/workflows")
+    echo "$wf_json" | python3 -c "
+import sys, json
+form_slug = '${form_slug}'
+d = json.load(sys.stdin)
+wfs = d.get('workflows', [])
+if wfs:
+    print(f'  [{form_slug}] {len(wfs)} workflow(s)')
+    for w in wfs:
+        print(f\"    {w.get('name','-'):<38} event={w.get('event','-'):<25} status={w.get('status','-')}\")
+" 2>/dev/null
+  done
+
+  # Security policies
+  echo ""
+  echo "=== Security Policies ==="
+  _space_api GET "$space" "/kapps/${kapp}/securityPolicyDefinitions" \
+    | python3 -c "
+import sys, json
+pols = json.load(sys.stdin).get('securityPolicyDefinitions', [])
+if not pols:
+    print('  (none)')
+else:
+    for p in pols:
+        print(f\"  {p.get('name','-'):<30} type={p.get('type','-'):<10} {p.get('message','-')}\")
+" 2>/dev/null
+
+  # Webhooks
+  echo ""
+  echo "=== Webhooks ==="
+  _space_api GET "$space" "/kapps/${kapp}/webhooks" \
+    | python3 -c "
+import sys, json
+whs = json.load(sys.stdin).get('webhooks', [])
+if not whs:
+    print('  (none)')
+else:
+    for w in whs:
+        print(f\"  {w.get('name','-'):<30} event={w.get('event','-'):<20} type={w.get('type','-')}\")
+" 2>/dev/null
+
+  # Categories
+  echo ""
+  echo "=== Categories ==="
+  _space_api GET "$space" "/kapps/${kapp}/categories" \
+    | python3 -c "
+import sys, json
+cats = json.load(sys.stdin).get('categories', [])
+if not cats:
+    print('  (none)')
+else:
+    for c in cats:
+        print(f\"  {c.get('name','-'):<30} slug={c.get('slug','-')}\")
+" 2>/dev/null
+
+  # Form types
+  echo ""
+  echo "=== Form Types ==="
+  _space_api GET "$space" "/kapps/${kapp}/formTypes" \
+    | python3 -c "
+import sys, json
+fts = json.load(sys.stdin).get('formTypes', [])
+if not fts:
+    print('  (none)')
+else:
+    for ft in fts:
+        print(f\"  {ft.get('name','-')}\")
+" 2>/dev/null
+}
+
+cmd_kapp_delete() {
+  local space="${1:?Usage: kinetic kapp delete <space_slug> <kapp_slug>}"
+  local kapp="${2:?Missing kapp slug}"
+  echo "Deleting kapp '${kapp}' from space '${space}'..."
+  _space_api DELETE "$space" "/kapps/${kapp}" | _pretty
+}
+
+cmd_kapp_export() {
+  local space="${1:?Usage: kinetic kapp export <space_slug> <kapp_slug> [output_file]}"
+  local kapp="${2:?Missing kapp slug}"
+  local outfile="${3:-${space}-${kapp}-export.json}"
+  echo "Exporting kapp '${kapp}' from space '${space}' to ${outfile}..."
+  _space_api GET "$space" "/kapps/${kapp}?export=true" > "$outfile"
+  echo "Done. Exported to ${outfile}"
+}
+
+# ---------------------------------------------------------------------------
+# form - Form management within a kapp
+# ---------------------------------------------------------------------------
+
+cmd_form_list() {
+  local space="${1:?Usage: kinetic form list <space_slug> <kapp_slug>}"
+  local kapp="${2:?Missing kapp slug}"
+  _space_api GET "$space" "/kapps/${kapp}/forms" | _pretty
+}
+
+cmd_form_get() {
+  local space="${1:?Usage: kinetic form get <space_slug> <kapp_slug> <form_slug>}"
+  local kapp="${2:?Missing kapp slug}"
+  local form="${3:?Missing form slug}"
+  _space_api GET "$space" "/kapps/${kapp}/forms/${form}?include=details" | _pretty
+}
+
+cmd_form_export() {
+  local space="${1:?Usage: kinetic form export <space_slug> <kapp_slug> <form_slug> [output_file]}"
+  local kapp="${2:?Missing kapp slug}"
+  local form="${3:?Missing form slug}"
+  local outfile="${4:-${space}-${kapp}-${form}-export.json}"
+  echo "Exporting form '${form}' to ${outfile}..."
+  _space_api GET "$space" "/kapps/${kapp}/forms/${form}?export=true" > "$outfile"
+  echo "Done. Exported to ${outfile}"
+}
+
+cmd_form_delete() {
+  local space="${1:?Usage: kinetic form delete <space_slug> <kapp_slug> <form_slug>}"
+  local kapp="${2:?Missing kapp slug}"
+  local form="${3:?Missing form slug}"
+  echo "Deleting form '${form}' from kapp '${kapp}' in space '${space}'..."
+  _space_api DELETE "$space" "/kapps/${kapp}/forms/${form}" | _pretty
+}
+
+# ---------------------------------------------------------------------------
+# submission - Submission management
+# ---------------------------------------------------------------------------
+
+cmd_submission_list() {
+  local space="${1:?Usage: kinetic submission list <space_slug> <kapp_slug> [form_slug]}"
+  local kapp="${2:?Missing kapp slug}"
+  local form="${3:-}"
+
+  if [ -n "$form" ]; then
+    _space_api GET "$space" "/kapps/${kapp}/forms/${form}/submissions?include=values&limit=25" | _pretty
+  else
+    _space_api GET "$space" "/kapps/${kapp}/submissions?include=values&limit=25" | _pretty
+  fi
+}
+
+cmd_submission_get() {
+  local space="${1:?Usage: kinetic submission get <space_slug> <submission_id>}"
+  local id="${2:?Missing submission ID}"
+  _space_api GET "$space" "/submissions/${id}?include=values,details" | _pretty
+}
+
+cmd_submission_delete() {
+  local space="${1:?Usage: kinetic submission delete <space_slug> <submission_id>}"
+  local id="${2:?Missing submission ID}"
+  echo "Deleting submission '${id}'..."
+  _space_api DELETE "$space" "/submissions/${id}" | _pretty
+}
+
+# ---------------------------------------------------------------------------
+# bridge - Bridge management
+# ---------------------------------------------------------------------------
+
+cmd_bridge_list() {
+  local space="${1:?Usage: kinetic bridge list <space_slug>}"
+  _space_api GET "$space" "/bridges" | _pretty
+}
+
+# ---------------------------------------------------------------------------
+# webhook - Webhook management
+# ---------------------------------------------------------------------------
+
+cmd_webhook_list() {
+  local space="${1:?Usage: kinetic webhook list <space_slug>}"
+  _space_api GET "$space" "/webhooks" | _pretty
+}
+
+# ---------------------------------------------------------------------------
+# version
+# ---------------------------------------------------------------------------
+
+cmd_version() {
+  local space="${1:-}"
+  if [ -n "$space" ]; then
+    _space_api GET "$space" "/version" | _pretty
+  else
+    echo "Usage: kinetic version <space_slug>"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Usage / Help
+# ---------------------------------------------------------------------------
+
+usage() {
+  cat <<'USAGE'
+kinetic - CLI for Kinetic Data Platform
+
+Usage: kinetic <command> <subcommand> [args...]
+
+Commands:
+
+  system
+    info [space]                            Full system fingerprint + all space details;
+                                            pass a space slug for just that space's details
+    health                                  Health check across components, spaces, and license
+    change-password <new_pass>              Change system admin password
+    smtp-get                                Show current SMTP settings
+    smtp-set <host> <port> <tls> <user> <pass> <from_name> <from_addr> [validation_email]
+                                            Configure system SMTP
+    list-spaces                             List space slugs
+    users [space]                           List users (with enabled status), grouped
+                                            by space. All-spaces view caps at 100/space
+                                            (flagged if exceeded); name a space for all
+    space-create <name> <user> <email> <display> <pass>  Create a new space
+    space-delete <slug>                     Delete a space
+    restart <component>                     Restart a component
+                                            Components: agent, core, loghub, indexer
+                                            Dependent:  cassandra, elasticsearch, ingress, trusted-certs
+    rotate-encryption-key                   Rotate the agent encryption key
+    background-tasks                        Show background task status and detail
+    submission-engine (start|stop|status)   Manage the submission engine
+
+  space
+    get <slug>                              Get space details
+    export <slug> [file]                    Export space to JSON file
+    import <slug> <file>                    Import/update space from JSON file
+
+  user
+    list <space>                            List users in a space
+    create <space> <user> <email> <display> <pass>  Create a user
+    get <space> <user>                      Get user details
+    update <space> <user> <json_body>       Update user (pass JSON body)
+    delete <space> <user>                   Delete a user
+    change-password <space> <user> <pass>   Change a user's password
+
+  team
+    list <space>                            List teams in a space
+    create <space> <name> [description]     Create a team
+    delete <space> <team_slug>              Delete a team
+    add-member <space> <team_name> <user>   Add user to team
+    remove-member <space> <team_slug> <user> Remove user from team
+
+  kapp
+    list <space>                            List kapps in a space
+    create <space> <name> <slug>            Create a kapp
+    get <space> <kapp>                      Get kapp details (raw JSON)
+    detail <space> <kapp>                   Kapp fingerprint (forms, workflows, policies, etc.)
+    delete <space> <kapp>                   Delete a kapp
+    export <space> <kapp> [file]            Export kapp to JSON file
+
+  form
+    list <space> <kapp>                     List forms in a kapp
+    get <space> <kapp> <form>               Get form details
+    export <space> <kapp> <form> [file]     Export form to JSON file
+    delete <space> <kapp> <form>            Delete a form
+
+  submission
+    list <space> <kapp> [form]              List submissions
+    get <space> <submission_id>             Get submission details
+    delete <space> <submission_id>          Delete a submission
+
+  bridge
+    list <space>                            List bridges
+
+  webhook
+    list <space>                            List webhooks
+
+  version <space>                           Show platform version
+
+  --version, -V                             Show kineticCLI version
+
+Config: kinetic.conf (same directory as this script) or environment variables:
+        KINETIC_HOST          Platform URL
+        KINETIC_SYSTEM_USER   System admin username  (for 'system' commands)
+        KINETIC_SYSTEM_PASS   System admin password  (for 'system' commands)
+        KINETIC_SPACE_USER    Space user username     (for space-scoped commands)
+        KINETIC_SPACE_PASS    Space user password     (for space-scoped commands)
+USAGE
+}
+
+# ---------------------------------------------------------------------------
+# Command dispatch
+# ---------------------------------------------------------------------------
+
+case "${1:-}" in
+  --version|-V)
+    echo "kineticCLI ${KINETIC_CLI_VERSION}"
+    exit 0
+    ;;
+esac
+
+_require_config
+
+cmd="${1:-help}"
+sub="${2:-}"
+shift 2 2>/dev/null || true
+
+case "${cmd}" in
+  system)
+    case "${sub}" in
+      info)              cmd_system_info "$@" ;;
+      health)            cmd_system_health "$@" ;;
+      change-password)   cmd_system_change_password "$@" ;;
+      smtp-get)          cmd_system_smtp_get "$@" ;;
+      smtp-set)          cmd_system_smtp_set "$@" ;;
+      list-spaces)       cmd_system_list_spaces "$@" ;;
+      users)             cmd_system_users "$@" ;;
+      space-create)      cmd_system_space_create "$@" ;;
+      space-delete)          cmd_system_space_delete "$@" ;;
+      restart)               cmd_system_restart "$@" ;;
+      rotate-encryption-key) cmd_system_rotate_encryption_key "$@" ;;
+      background-tasks)      cmd_system_background_tasks "$@" ;;
+      submission-engine)     cmd_system_submission_engine "$@" ;;
+      *)                 echo "Usage: kinetic system {info|health|users|change-password|smtp-get|smtp-set|list-spaces|space-create|space-delete|restart|rotate-encryption-key|background-tasks|submission-engine}" ;;
+    esac
+    ;;
+  space)
+    case "${sub}" in
+      get)     cmd_space_get "$@" ;;
+      export)  cmd_space_export "$@" ;;
+      import)  cmd_space_import "$@" ;;
+      *)       echo "Usage: kinetic space {get|export|import}" ;;
+    esac
+    ;;
+  user)
+    case "${sub}" in
+      list)             cmd_user_list "$@" ;;
+      create)           cmd_user_create "$@" ;;
+      get)              cmd_user_get "$@" ;;
+      update)           cmd_user_update "$@" ;;
+      delete)           cmd_user_delete "$@" ;;
+      change-password)  cmd_user_change_password "$@" ;;
+      *)                echo "Usage: kinetic user {list|create|get|update|delete|change-password}" ;;
+    esac
+    ;;
+  team)
+    case "${sub}" in
+      list)           cmd_team_list "$@" ;;
+      create)         cmd_team_create "$@" ;;
+      delete)         cmd_team_delete "$@" ;;
+      add-member)     cmd_team_add_member "$@" ;;
+      remove-member)  cmd_team_remove_member "$@" ;;
+      *)              echo "Usage: kinetic team {list|create|delete|add-member|remove-member}" ;;
+    esac
+    ;;
+  kapp)
+    case "${sub}" in
+      list)    cmd_kapp_list "$@" ;;
+      create)  cmd_kapp_create "$@" ;;
+      get)     cmd_kapp_get "$@" ;;
+      detail)  cmd_kapp_detail "$@" ;;
+      delete)  cmd_kapp_delete "$@" ;;
+      export)  cmd_kapp_export "$@" ;;
+      *)       echo "Usage: kinetic kapp {list|create|get|detail|delete|export}" ;;
+    esac
+    ;;
+  form)
+    case "${sub}" in
+      list)    cmd_form_list "$@" ;;
+      get)     cmd_form_get "$@" ;;
+      export)  cmd_form_export "$@" ;;
+      delete)  cmd_form_delete "$@" ;;
+      *)       echo "Usage: kinetic form {list|get|export|delete}" ;;
+    esac
+    ;;
+  submission)
+    case "${sub}" in
+      list)    cmd_submission_list "$@" ;;
+      get)     cmd_submission_get "$@" ;;
+      delete)  cmd_submission_delete "$@" ;;
+      *)       echo "Usage: kinetic submission {list|get|delete}" ;;
+    esac
+    ;;
+  bridge)
+    case "${sub}" in
+      list)  cmd_bridge_list "$@" ;;
+      *)     echo "Usage: kinetic bridge {list}" ;;
+    esac
+    ;;
+  webhook)
+    case "${sub}" in
+      list)  cmd_webhook_list "$@" ;;
+      *)     echo "Usage: kinetic webhook {list}" ;;
+    esac
+    ;;
+  version)
+    cmd_version "${sub}" "$@" ;;
+  help|--help|-h)
+    usage ;;
+  *)
+    echo "Unknown command: ${cmd}"
+    usage
+    exit 1
+    ;;
+esac
