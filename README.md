@@ -75,34 +75,6 @@ Self-contained installer for deploying the Kinetic Platform on a fresh Linux ser
    ```
 
 
-
-
-## Optional Steps
-   ```bash
-   Set the default email address to receive system level emails (disk full, server unhealthy)
-   # Usage: kinetic system smtp-set <host> <port> <tls> <username> <password> <from_name> <from_address> [validation_email]
-   ./kinetic system smtp-set smtp.gmail.com 587 true joe.blow@gmail.com password Joe joe.blow@gmail.com youremail@domain.com
-   ```
-
-
-## License the system (License defaults to 1,000 submissions - then need to restart core server)
-   See support@kineticdata.com for license assistance
-
-
-[[AI WORLD // incomplete directions]]
-## DOWNLOAD MCP and Skills
-  - https://github.com/kineticdata/kinetic-platform-mgnt-mcp-server
-  - https://github.com/kineticdata/kinetic-platform-ai-skills
-
-
-## Build App (claude)
-  Connect the mcp server to Kinetic Platform
-  Load the Skills for Kinetic Platform
-
-  ```
-  Build me a simple helpdesk application on the Kinetic Platform
-  ```
-
 ## What Gets Installed (Server)
 
 - **k0s** — Single-node Kubernetes cluster
@@ -142,4 +114,33 @@ sudo exportfs -ra
 sudo k0s stop
 sudo k0s reset
 ```
+
+
+
+## Optional Steps
+   ```bash
+   Set the default email address to receive system level emails (disk full, server unhealthy)
+   # Usage: kinetic system smtp-set <host> <port> <tls> <username> <password> <from_name> <from_address> [validation_email]
+   ./kinetic system smtp-set smtp.gmail.com 587 true joe.blow@gmail.com password Joe joe.blow@gmail.com youremail@domain.com
+   ```
+
+
+## License the system
+   License defaults to 1,000 submissions, the core server will shutdown, use the admin console to restart the core server
+   See support@kineticdata.com for license assistance
+
+
+## AI WORLD // incomplete directions
+## DOWNLOAD MCP and Skills
+  - https://github.com/kineticdata/kinetic-platform-mgnt-mcp-server
+  - https://github.com/kineticdata/kinetic-platform-ai-skills
+
+
+## Build App (claude)
+  Connect the mcp server to Kinetic Platform
+  Load the Skills for Kinetic Platform
+
+  ```
+  Build me a simple helpdesk application on the Kinetic Platform
+  ```
 
