@@ -29,6 +29,7 @@ Self-contained installer for deploying the Kinetic Platform on a fresh Linux ser
 3. Edit /etc/hosts (on server and on clients, unless you used a real IP/Name)
    ```bash
    192.168.86.55 example.com # IP address from install script
+   192.168.86.55 first.example.com # IP address from install script, setup for first tenant
    ```
 
 4. Build your first tennant -- I call it "first"
@@ -93,7 +94,7 @@ sudo k0s reset
 
 ## Optional Steps
    ```bash
-   Set the default email address to receive system level emails (disk full, server unhealthy)
+   # Set the default smtp email server for admin messages
    # Usage: kinetic system smtp-set <host> <port> <tls> <username> <password> <from_name> <from_address> [validation_email]
    ./kinetic system smtp-set smtp.gmail.com 587 true joe.blow@gmail.com password Joe joe.blow@gmail.com youremail@domain.com
    ```
