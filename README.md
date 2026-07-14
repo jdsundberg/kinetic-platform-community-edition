@@ -31,8 +31,9 @@ Self-contained installer for deploying the Kinetic Platform on a fresh Linux ser
    192.168.86.55 first.example.com
    ```
 
-4. Build your first tennant -- I call it "first"
+4. Config kinetic CLI and Build your first tenant -- I call it "first"
    ```bash
+   ./kinetic config create
    # Usage: kinetic system space-create <name> <admin_user> <email> <display_name> <password>
    ./kinetic system space-create first joe joe@sample.com Joe joe1
    ```
