@@ -52,6 +52,7 @@ Self-contained installer for deploying the Kinetic Platform on a fresh Linux ser
 
 
 ## Sample of install screen
+   ```bash
 
   ╔════════════════════════════════════════╗
   ║     Kinetic Platform Installer v2      ║
@@ -70,8 +71,8 @@ Self-contained installer for deploying the Kinetic Platform on a fresh Linux ser
 [INFO] Elasticsearch:     in-cluster
 [INFO] NFS Server IP:     192.168.86.55
 [INFO] System Username:   admin
-...
 
+   ```
 
 
 
