@@ -10,9 +10,7 @@ Self-contained installer for deploying the Kinetic Platform on a fresh Linux ser
 
 ## Install
 
-0. Login to Linux server
-
-1. Clone and extract repository to your server:
+1. On Linux server, clone and extract repository
    ```bash
    git clone https://github.com/jdsundberg/kinetic-platform-community-edition.git
    cd kinetic-platform-community-edition
