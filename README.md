@@ -1,4 +1,4 @@
-# Kinetic Platform Community Installer
+# Kinetic Platform Community Edition Installer
 
 Self-contained installer for deploying the Kinetic Platform on a fresh Linux server (Ubuntu, Redhat)
 
@@ -12,7 +12,7 @@ Self-contained installer for deploying the Kinetic Platform on a fresh Linux ser
 
 0. Login to Linux server
 
-1. Clone and extract epository to your server:
+1. Clone and extract repository to your server:
    ```bash
    git clone https://github.com/jdsundberg/kinetic-platform-community-edition.git
    cd kinetic-platform-community-edition
@@ -26,7 +26,7 @@ Self-contained installer for deploying the Kinetic Platform on a fresh Linux ser
    sudo ./kinetic-platform-installer/install.sh --starter --domain example.com --password adminpassword
    ```
 
-3. Edit hostsfile (on server and on clients, unless you used a real IP/Name)
+3. Edit /etc/hosts (on server and on clients, unless you used a real IP/Name)
    ```bash
    192.168.86.55 example.com # IP address from install script
    ```
@@ -49,32 +49,6 @@ Self-contained installer for deploying the Kinetic Platform on a fresh Linux ser
 
 
 
-
-
-## Sample of install screen
-   ```bash
-
-  ╔════════════════════════════════════════╗
-  ║     Kinetic Platform Installer v2      ║
-  ╚════════════════════════════════════════╝
-
-
-=== Validating Prerequisites ===
-
-[OK] Prerequisites validated
-
-=== Starter Mode ===
-
-[INFO] Domain:            example.com
-[INFO] Ingress:           traefik
-[INFO] Ports:             80/443 (hostPort)
-[INFO] Elasticsearch:     in-cluster
-[INFO] NFS Server IP:     192.168.86.55
-[INFO] System Username:   admin
-
-   ```
-
-
 ## What Gets Installed (Server)
 
 - **k0s** — Single-node Kubernetes cluster
@@ -87,7 +61,7 @@ Self-contained installer for deploying the Kinetic Platform on a fresh Linux ser
   - Core, Agent, System Coordinator
   - System Console, Space Console, OAS Console
   - Indexer, Bundles
-  - Elasticsearch
+  - Elasticsearch (in-cluster)
   - Loghub + Log Collector
 
 All services run with **1 replica** and no HPA. Scale up manually after install if needed.
@@ -130,17 +104,14 @@ sudo k0s reset
    See support@kineticdata.com for license assistance
 
 
-## AI WORLD // incomplete directions
-## DOWNLOAD MCP and Skills
-  - https://github.com/kineticdata/kinetic-platform-mgnt-mcp-server
-  - https://github.com/kineticdata/kinetic-platform-ai-skills
 
+## Build Apps with AI
 
-## Build App (claude)
-  Connect the mcp server to Kinetic Platform
-  Load the Skills for Kinetic Platform
+Connect Claude to your platform with the Kinetic MCP server and skills library, then build applications by describing what you want:
 
-  ```
-  Build me a simple helpdesk application on the Kinetic Platform
-  ```
+```
+Build me a simple helpdesk application on the Kinetic Platform
+```
+
+See [README-AI.md](README-AI.md) for setup.
 
