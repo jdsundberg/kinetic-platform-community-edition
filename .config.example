@@ -1,0 +1,9 @@
+KINETIC_HOST=https://your-host.example.com
+
+# System admin (for 'kinetic system' commands)
+KINETIC_SYSTEM_USER=your-system-username
+KINETIC_SYSTEM_PASS=your-system-password
+
+# Space user (for space-scoped commands: user, team, kapp, form, etc.)
+KINETIC_SPACE_USER=your-space-username
+KINETIC_SPACE_PASS=your-space-password

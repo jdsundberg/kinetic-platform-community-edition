@@ -1,0 +1,5 @@
+# Local CLI config (contains credentials)
+.config
+
+# macOS
+.DS_Store
