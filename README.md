@@ -2,15 +2,6 @@
 
 Self-contained installer for deploying the Kinetic Platform on a fresh Linux server (Ubuntu, Redhat)
 
-## What's in the Box
-
-| File | Purpose |
-|---|---|
-| `.config`| USERNAME and PASSWORD for Kinetic CLI |
-| `kinetic`| Kinetic CLI |
-| `kinetic-platform-installer-*.tar.gz`| Pre-packaged install files |
-| `README.md` | This file |
-
 ## Prerequisites
 
 - **Server:** Modern Linux with root/sudo SSH access
@@ -19,28 +10,42 @@ Self-contained installer for deploying the Kinetic Platform on a fresh Linux ser
 
 ## Install
 
-0. Login to server
+0. Login to Linux server
 
-1. Clone repository to your server:
+1. Clone and extract epository to your server:
    ```bash
    git clone https://github.com/jdsundberg/kinetic-platform-community-edition.git
-   ```
-
-2. Extract the install:
-   ```bash
    cd kinetic-platform-community-edition
    tar xzf kinetic-platform-installer*.tar.gz
    ```
 
-3. Run the installer as root:
+2. Run the installer as root
    ```bash
+   # Note: This process takes about 10-15 minutes
    # Starter mode with custom domain and custom admin password 
    sudo ./kinetic-platform-installer/install.sh --starter --domain example.com --password adminpassword
    ```
 
+3. Edit hostsfile (on server and on clients, unless you used a real IP/Name)
+   192.168.86.55 example.com # IP address from install script
 
-You should see output like this: 
+4. # Build your first tennant -- I call it "first"
+   # Usage: kinetic system space-create <name> <admin_user> <email> <display_name> <password>
+   ./kinetic system space-create first joe joe@sample.com Joe joe1
 
+
+## Consoles:
+   Your browser will warn about a self-signed certificate — click through to proceed.
+
+   System Admin: `https://example.com/app/console/`
+   Admin for (First space): `https://first.example.com/app/console/`
+   User for (First space): `https://first.example.com/`
+
+
+
+
+
+# Sample of install screen
 
   ╔════════════════════════════════════════╗
   ║     Kinetic Platform Installer v2      ║
@@ -59,60 +64,35 @@ You should see output like this:
 [INFO] Elasticsearch:     in-cluster
 [INFO] NFS Server IP:     192.168.86.55
 [INFO] System Username:   admin
-
-[OK] Demo defaults applied
-
 ...
 
 
-4. Wait for installation to complete (~10-15 minutes). Credentials are printed at the end.
 
 
-5. Meantime - edit hostsfile so you point example.com (or whatever name you used) to the IP address given
-(Above sample shows 192.168.86.55)
 
-
-(Optional Step 6) 
-6. # Set the default email address to receive system level emails (disk full, server unhealthy)
+## Optional Steps
+# Set the default email address to receive system level emails (disk full, server unhealthy)
 # Usage: kinetic system smtp-set <host> <port> <tls> <username> <password> <from_name> <from_address> [validation_email]
-./kinetic system smtp-set smtp.gmail.com 587 true joe.blow@gmail.com password Joe joe.blow@gmail.com youremail@domain.com
+   ./kinetic system smtp-set smtp.gmail.com 587 true joe.blow@gmail.com password Joe joe.blow@gmail.com youremail@domain.com
 
 
-7. # Build your first tennant -- I call it "first"
-# Usage: kinetic system space-create <name> <admin_user> <email> <display_name> <password>
-./kinetic system space-create first joe youremail@domain.com Joe joe1
-
-8. # Open your Kinetic Platform administrator console
-Open: `https://example.com/app/console/`
-Your browser will warn about a self-signed certificate — click through to proceed.
-# License the system (License defaults to 1000 submissions - then need to restart core server)
-
-9. # Open your Kinetic Platform first space administrator console
-Open: `https://first.example.com/app/console/`
-
-10. # Open your Kinetic Platform first space as a user 
-https://first.example.com/
-
-
-
-
-
+# License the system (License defaults to 1,000 submissions - then need to restart core server)
+   See support@kineticdata.com for license assistance
 
 
 [[AI WORLD // incomplete directions]]
-11. # DOWNLOAD MCP and Skills
-https://github.com/kineticdata/kinetic-platform-mgnt-mcp-server
-https://github.com/kineticdata/kinetic-platform-ai-skills
+# DOWNLOAD MCP and Skills
+  - https://github.com/kineticdata/kinetic-platform-mgnt-mcp-server
+  - https://github.com/kineticdata/kinetic-platform-ai-skills
 
 
-x. # Build App
-(claude)
-connect the mcp server to Kinetic Platform
-load the Skills for Kinetic Platform
+x. # Build App (claude)
+  Connect the mcp server to Kinetic Platform
+  Load the Skills for Kinetic Platform
 
-Build me a simple helpdesk application on the Kinetic Platform
-
-
+  ```
+  Build me a simple helpdesk application on the Kinetic Platform
+  ```
 
 ## What Gets Installed (Server)
 
