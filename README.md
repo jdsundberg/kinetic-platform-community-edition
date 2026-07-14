@@ -78,12 +78,14 @@ Self-contained installer for deploying the Kinetic Platform on a fresh Linux ser
 
 
 ## Optional Steps
-# Set the default email address to receive system level emails (disk full, server unhealthy)
-# Usage: kinetic system smtp-set <host> <port> <tls> <username> <password> <from_name> <from_address> [validation_email]
+   ```bash
+   Set the default email address to receive system level emails (disk full, server unhealthy)
+   # Usage: kinetic system smtp-set <host> <port> <tls> <username> <password> <from_name> <from_address> [validation_email]
    ./kinetic system smtp-set smtp.gmail.com 587 true joe.blow@gmail.com password Joe joe.blow@gmail.com youremail@domain.com
+   ```
 
 
-### License the system (License defaults to 1,000 submissions - then need to restart core server)
+## License the system (License defaults to 1,000 submissions - then need to restart core server)
    See support@kineticdata.com for license assistance
 
 
