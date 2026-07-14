@@ -29,7 +29,7 @@ Self-contained installer for deploying the Kinetic Platform on a fresh Linux ser
 3. Edit hostsfile (on server and on clients, unless you used a real IP/Name)
    192.168.86.55 example.com # IP address from install script
 
-4. # Build your first tennant -- I call it "first"
+4. Build your first tennant -- I call it "first"
    # Usage: kinetic system space-create <name> <admin_user> <email> <display_name> <password>
    ./kinetic system space-create first joe joe@sample.com Joe joe1
 
@@ -45,7 +45,7 @@ Self-contained installer for deploying the Kinetic Platform on a fresh Linux ser
 
 
 
-# Sample of install screen
+## Sample of install screen
 
   ╔════════════════════════════════════════╗
   ║     Kinetic Platform Installer v2      ║
@@ -76,17 +76,17 @@ Self-contained installer for deploying the Kinetic Platform on a fresh Linux ser
    ./kinetic system smtp-set smtp.gmail.com 587 true joe.blow@gmail.com password Joe joe.blow@gmail.com youremail@domain.com
 
 
-# License the system (License defaults to 1,000 submissions - then need to restart core server)
+### License the system (License defaults to 1,000 submissions - then need to restart core server)
    See support@kineticdata.com for license assistance
 
 
 [[AI WORLD // incomplete directions]]
-# DOWNLOAD MCP and Skills
+## DOWNLOAD MCP and Skills
   - https://github.com/kineticdata/kinetic-platform-mgnt-mcp-server
   - https://github.com/kineticdata/kinetic-platform-ai-skills
 
 
-x. # Build App (claude)
+## Build App (claude)
   Connect the mcp server to Kinetic Platform
   Load the Skills for Kinetic Platform
 
