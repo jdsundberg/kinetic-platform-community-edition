@@ -56,6 +56,7 @@ unset _env_KINETIC_HOST _env_KINETIC_SYSTEM_USER _env_KINETIC_SYSTEM_PASS \
 _require_config() {
   if [ -z "$KINETIC_HOST" ]; then
     echo "Error: KINETIC_HOST must be set in ${CONF} or as an environment variable."
+    echo "Run 'kinetic config create' to create a config file, or 'kinetic' for details."
     exit 1
   fi
 }
@@ -1336,6 +1337,44 @@ Config: .config (same directory as this script; run 'kinetic config create' to
 USAGE
 }
 
+# Shown when run with no arguments and no config exists yet — the first thing a
+# new user sees, so it explains how to create the config rather than listing
+# commands that cannot run yet.
+no_config_help() {
+  cat <<USAGE
+kinetic - CLI for Kinetic Data Platform
+
+No configuration found, so no commands can run yet.
+
+Create a config file — this prompts for each value and writes
+${CONF} with mode 600:
+
+    ./kinetic config create
+
+It asks for:
+
+    KINETIC_HOST          Platform URL, e.g. https://example.com
+    KINETIC_SYSTEM_USER   System admin username  (for 'system' commands)
+    KINETIC_SYSTEM_PASS   System admin password  (for 'system' commands)
+    KINETIC_SPACE_USER    Space user username    (for space-scoped commands)
+    KINETIC_SPACE_PASS    Space user password    (for space-scoped commands)
+
+To keep the config somewhere else, pass a path and point KINETIC_CONF at it:
+
+    ./kinetic config create /path/to/.config
+    KINETIC_CONF=/path/to/.config ./kinetic system health
+
+Or skip the file and set the variables in the environment instead — these
+take precedence over the config file:
+
+    export KINETIC_HOST=https://example.com
+    export KINETIC_SYSTEM_USER=admin
+    export KINETIC_SYSTEM_PASS=adminpassword
+
+Once configured, run 'kinetic help' for the full command list.
+USAGE
+}
+
 # ---------------------------------------------------------------------------
 # Command dispatch
 # ---------------------------------------------------------------------------
@@ -1358,6 +1397,16 @@ case "${1:-}" in
         exit 1
         ;;
     esac
+    ;;
+  # No arguments: explain how to configure if there is no config yet,
+  # otherwise fall through to the usual help.
+  "")
+    if [ -z "$KINETIC_HOST" ]; then
+      no_config_help
+      exit 1
+    fi
+    usage
+    exit 0
     ;;
 esac
 

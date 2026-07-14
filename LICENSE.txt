@@ -1,0 +1,38 @@
+════════════════════════════════════════════════════════════════════
+
+    Kinetic Platform — Community Edition
+
+  ════════════════════════════════════════════════════════════════════
+
+    Copyright (c) 2026 Kinetic Data, Inc. All rights reserved.
+
+    This software is the proprietary property of Kinetic Data, Inc.
+    and is provided under the following terms:
+
+    PERMITTED USE
+    This installation is licensed for personal, non-commercial use
+    including learning, evaluation, experimentation, and proof of
+    concept development. You may freely explore the platform to
+    assess its capabilities for your organization.
+
+    RESTRICTIONS
+    - This software may not be used in production environments
+    - Redistribution or resale is prohibited
+    - Reverse engineering or modification of platform binaries
+      is prohibited
+
+    NO WARRANTY / NO SUPPORT
+    This software is provided "AS IS" without warranty of any kind,
+    express or implied. Kinetic Data does not provide technical
+    support, maintenance, or updates for community installations.
+    Use at your own risk.
+
+    READY FOR MORE?
+    When you're ready for production licensing, dedicated support,
+    and enterprise features, contact us:
+
+      https://www.kineticdata.com
+      sales@kineticdata.com
+
+    Thank you for trying Kinetic Platform.
+
