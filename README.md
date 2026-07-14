@@ -27,18 +27,24 @@ Self-contained installer for deploying the Kinetic Platform on a fresh Linux ser
    ```
 
 3. Edit hostsfile (on server and on clients, unless you used a real IP/Name)
+   ```bash
    192.168.86.55 example.com # IP address from install script
+   ```
 
 4. Build your first tennant -- I call it "first"
+   ```bash
    # Usage: kinetic system space-create <name> <admin_user> <email> <display_name> <password>
    ./kinetic system space-create first joe joe@sample.com Joe joe1
+   ```
 
 
 ## Consoles:
    Your browser will warn about a self-signed certificate — click through to proceed.
 
    System Admin: `https://example.com/app/console/`
+
    Admin for (First space): `https://first.example.com/app/console/`
+
    User for (First space): `https://first.example.com/`
 
 
