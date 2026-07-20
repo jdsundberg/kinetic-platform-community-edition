@@ -14,7 +14,7 @@ Self-contained installer for deploying the Kinetic Platform on a fresh Linux ser
    ```bash
    git clone https://github.com/jdsundberg/kinetic-platform-community-edition.git
    cd kinetic-platform-community-edition
-   tar xzf kinetic-platform-installer*.tar.gz
+   tar zxvf kinetic-platform-installer.tar.gz
    ```
 
 2. Run the installer as root
